@@ -141,6 +141,7 @@ void setup(void)
   httpServer.begin();
   
   Serial.println(F("Listening for connections..."));
+
 }
 
 void loop(void) {
@@ -260,6 +261,9 @@ void loop(void) {
     // Close the connection when done.
     Serial.println(F("Client disconnected"));
     client.close();
+  
+    lcd.noBacklight();
+
   }
 }
 
