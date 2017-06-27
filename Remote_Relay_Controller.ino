@@ -1,42 +1,14 @@
+#include <WiFi101.h>
+
+#include <MemoryFree.h>
+
 #include <LiquidCrystal_I2C.h>
-#include <Adafruit_CC3000.h>
 #include <SPI.h>
-#include "utility/debug.h"
-#include "utility/socket.h"
-
-// These are the interrupt and control pins
-#define ADAFRUIT_CC3000_IRQ   3  // MUST be an interrupt pin!
-// These can be any two pins
-#define ADAFRUIT_CC3000_VBAT  5
-#define ADAFRUIT_CC3000_CS    10
-// Use hardware SPI for the remaining pins
-// On an UNO, SCK = 13, MISO = 12, and MOSI = 11
-
-Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ, ADAFRUIT_CC3000_VBAT,
-                                         SPI_CLOCK_DIVIDER); // you can change this clock speed
 
 #define WLAN_SSID       "<SSID>"   // cannot be longer than 32 characters!
 #define WLAN_PASS       "<PASS>"
-// Security can be WLAN_SEC_UNSEC, WLAN_SEC_WEP, WLAN_SEC_WPA or WLAN_SEC_WPA2
-#define WLAN_SECURITY   WLAN_SEC_WPA2
-
-#define LISTEN_PORT           80      // What TCP port to listen on for connections.  
-                                      // The HTTP protocol uses port 80 by default.
-
-#define MAX_ACTION            10      // Maximum length of the HTTP action that can be parsed.
-
-#define MAX_PATH              64      // Maximum length of the HTTP request path that can be parsed.
-                                      // There isn't much memory available so keep this short!
-
-#define BUFFER_SIZE           MAX_ACTION + MAX_PATH + 20  // Size of buffer for incoming request data.
-                                                          // Since only the first line is parsed this
-                                                          // needs to be as large as the maximum action
-                                                          // and path plus a little for whitespace and
-                                                          // HTTP version.
 
 #define TIMEOUT_MS            500    // Amount of time in milliseconds to wait for
-                                     // an incoming request to finish.  Don't set this
-                                     // too high or your server could be slow to respond.
 
 #define CONNECTION_KEY "KEIWK23223MNN029KNX929D"
 #define GREENRELAY 14
@@ -44,90 +16,58 @@ Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ
 #define YELLOWRELAY 16
 #define AUXRELAY 17
 
-Adafruit_CC3000_Server httpServer(LISTEN_PORT);
-uint8_t buffer[BUFFER_SIZE+1];
-int bufindex = 0;
-char action[MAX_ACTION+1];
-char path[MAX_PATH+1];
-char params[MAX_PATH+1];
-char* tokenizer;
-char paramkey[MAX_PATH+1];
-char value[MAX_PATH+1];
+WiFiServer httpServer(80);
+int status = WL_IDLE_STATUS;
+bool firstRequest = true;
 
 LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);  // Set the LCD I2C address
 
-void setup(void)
-{
+void setup(void) {
   Serial.begin(115200);
 
   lcd.begin(16,2);
-  for(int i = 0; i< 3; i++)  {
-    lcd.backlight();
-    delay(250);
-    lcd.noBacklight();
-    delay(250);
-  }
-  lcd.backlight(); // finish with backlight on 
+  lcd.backlight(); // start with the backlight on
 
   lcd.clear();
   lcd.setCursor(0,0);
   lcd.print(F("Initializing"));
   lcd.setCursor(0,1);
   lcd.print(WLAN_SSID);
-  
-  // Initialise the module
-  Serial.println(F("\nInitializing..."));
-  if (!cc3000.begin()) {
-    Serial.println(F("Couldn't begin()! Check your wiring?"));
-    while(1);
-  }
-  
-  Serial.print(F("\nAttempting to connect to ")); Serial.println(WLAN_SSID);
-  if (!cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY)) {
-    Serial.println(F("Failed!"));
-    lcd.setCursor(0,1);
-    lcd.print("Failed to initialize WiFi");
-    while(1);
-  }
-   
-  Serial.println(F("Connected!"));
-  
-  Serial.println(F("Request DHCP"));
-  while (!cc3000.checkDHCP()) {
-    delay(100); // ToDo: Insert a DHCP timeout!
-  }  
 
-  // Display the IP address DNS, Gateway, etc.
-  while (! displayConnectionDetails()) {
-    delay(1000);
+  // Ensure the WiFi shield is operational
+  if (WiFi.status() == WL_NO_SHIELD) {
+    Serial.println(F("No WiFi Shield"));
+    while (true);
   }
 
-  uint32_t ipAddress, netmask, gateway, dhcpserv, dnsserv;
-  
-  if(cc3000.getIPAddress(&ipAddress, &netmask, &gateway, &dhcpserv, &dnsserv)) {
-    lcd.clear();
-    lcd.setCursor(0,0);
-    lcd.print(WLAN_SSID);
-    lcd.setCursor(0,1);
-    lcd.print((uint8_t)(ipAddress >> 24));
-    lcd.setCursor(3,1);
-    lcd.print(".");
-    lcd.setCursor(4,1);
-    lcd.print((uint8_t)(ipAddress >> 16));
-    lcd.setCursor(8,1);
-    lcd.print(".");
-    lcd.setCursor(9,1);
-    lcd.print((uint8_t)(ipAddress >> 8));
-    lcd.setCursor(12,1);
-    lcd.print(".");
-    lcd.setCursor(13,1);
-    lcd.print((uint8_t)(ipAddress));
-  } else {
-    lcd.clear();
-    lcd.setCursor(0,0);
-    lcd.print("unable to get IP");
+  // Connect to the WiFi network
+  while (status != WL_CONNECTED) {
+    Serial.print(F("Attempting to connect to SSID "));
+    Serial.println(F(WLAN_SSID));
+    status = WiFi.begin(WLAN_SSID, WLAN_PASS);
+    delay(10000);
   }
+  
+  httpServer.begin();
+  IPAddress ip = WiFi.localIP();
+  long rssi = WiFi.RSSI();
 
+  Serial.println(WiFi.SSID());
+  Serial.print(F("IP Address: "));
+  Serial.println(ip);
+
+  // print the received signal strength:
+  Serial.print(F("signal strength (RSSI):"));
+  Serial.print(rssi);
+  Serial.println(F(" dBm"));
+  
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print(WiFi.SSID());
+  lcd.setCursor(0,1);
+  lcd.print(ip);
+
+  // Setup the relay interface
   pinMode(GREENRELAY, OUTPUT);
   pinMode(ORANGERELAY, OUTPUT);
   pinMode(YELLOWRELAY, OUTPUT);
@@ -141,199 +81,165 @@ void setup(void)
   httpServer.begin();
   
   Serial.println(F("Listening for connections..."));
-
 }
 
 void loop(void) {
-  bool done;
-  
   // Try to get a client which is connected.
-  Adafruit_CC3000_ClientRef client = httpServer.available();
+  WiFiClient client = httpServer.available();
   if (client) {
     Serial.println(F("Client connected."));
-    // Process this request until it completes or times out.
-    // Note that this is explicitly limited to handling one request at a time!
+    bool thisIsRequestLine = true; // First input line is the request
 
-    // Clear the incoming data buffer and point to the beginning of it.
-    bufindex = 0;
-    memset(&buffer, 0, sizeof(buffer));
+    String requestLine = "";
+    String currentLine = "";
+    unsigned long timeout = millis() + TIMEOUT_MS;
     
-    // Clear action and path strings.
-    memset(&action, 0, sizeof(action));
-    memset(&path,   0, sizeof(path));
-    memset(&params, 0, sizeof(params));
-    memset(&paramkey, 0, sizeof(params));
-    memset(&value, 0, sizeof(params));
+    while (client.connected()) {
+      bool authenticated = false;
+      bool supportedAction = false;
+      String statusOutput = "";
 
-    tokenizer = NULL;
-
-    // Set a timeout for reading all the incoming data.
-    unsigned long endtime = millis() + TIMEOUT_MS;
-    
-    // Read all the incoming data until it can be parsed or the timeout expires.
-    bool parsed = false;
-    while (!parsed && (millis() < endtime) && (bufindex < BUFFER_SIZE)) {
+      // Check to see if we've waited too long. If so, forget about this client and move to the next
+      if (millis() >= timeout) {
+        Serial.println();
+        Serial.println(F("Connection timed out. Moving to next client."));
+        break;
+      }
       if (client.available()) {
-        buffer[bufindex++] = client.read();
-      }
-      parsed = parseRequest(buffer, bufindex, action, path, params);
-    }
-
-    // Handle the request if it was parsed.
-    if (parsed) {
-      Serial.println(F("Processing request"));
-      Serial.print(F("Action: ")); Serial.println(action);
-      Serial.print(F("Path: ")); Serial.println(path);
-      // Check the action to see if it was a GET request.
-      if (strcmp(action, "GET") == 0) {
-        // Respond with the path that was accessed.
-        // First send the success response code.
-        client.fastrprintln(F("HTTP/1.1 200 OK"));
-        // Then send a few headers to identify the type of data returned and that
-        // the connection will not be held open.
-        client.fastrprintln(F("Content-Type: text/plain"));
-        client.fastrprintln(F("Connection: close"));
-        client.fastrprintln(F("Server: Thermostat Remote Relay Controller"));
-        // Send an empty line to signal start of body.
-        client.fastrprintln(F(""));
-//        // Now send the response data.
-//        client.fastrprintln(F("Hello world!"));
-//        client.fastrprint(F("You accessed path: ")); client.fastrprintln(path);
-//        client.fastrprint(F("Params: ")); client.fastrprintln(params);
-
-        tokenizer = strtok(params, "?&=");
-        if (tokenizer != NULL) strncpy(paramkey, tokenizer, MAX_PATH);
-        Serial.println(paramkey);
-        tokenizer = strtok(NULL, "?&=");
-        if (tokenizer != NULL) strncpy(value, tokenizer, MAX_PATH);
-        Serial.println(value);
-
-        if (strcmp(paramkey, "key") == 0) {
-          Serial.println("checking authentication key");
-          if (strcmp(value, CONNECTION_KEY) == 0) {
-            Serial.println("authenticated");
-
-            // Since we're authenticated, process the request
-
-            if (strcmp(path, "/green=on") == 0) relay(GREENRELAY,1);
-            if (strcmp(path, "/green=off") == 0) relay(GREENRELAY,0);
-            if (strcmp(path, "/orange=on") == 0) relay(ORANGERELAY,1);
-            if (strcmp(path, "/orange=off") == 0) relay(ORANGERELAY,0);
-            if (strcmp(path, "/yellow=on") == 0) relay(YELLOWRELAY,1);
-            if (strcmp(path, "/yellow=off") == 0) relay(YELLOWRELAY,0);
-            if (strcmp(path, "/aux=on") == 0) relay(AUXRELAY,1);
-            if (strcmp(path, "/aux=off") == 0) relay(AUXRELAY,0);
-            if (strcmp(path, "/all=on") == 0) { relay(GREENRELAY,1); relay(ORANGERELAY, 1); relay(YELLOWRELAY,1); relay(AUXRELAY, 1); }
-            if (strcmp(path, "/all=off") == 0) { relay(GREENRELAY,0); relay(ORANGERELAY, 0); relay(YELLOWRELAY,0); relay(AUXRELAY, 0); }
-
-            if (strcmp(path, "/green=state") == 0) client.fastrprintln(relayState(GREENRELAY));
-            if (strcmp(path, "/orange=state") == 0) client.fastrprintln(relayState(ORANGERELAY));
-            if (strcmp(path, "/yellow=state") == 0) client.fastrprintln(relayState(YELLOWRELAY));
-            if (strcmp(path, "/aux=state") == 0) client.fastrprintln(relayState(AUXRELAY));
-            if (strcmp(path, "/all=state") == 0) {
-              Serial.println("all state");
-              client.fastrprint(relayState(GREENRELAY));
-              client.fastrprint(",");
-              client.fastrprint(relayState(ORANGERELAY));
-              client.fastrprint(",");
-              client.fastrprint(relayState(YELLOWRELAY));
-              client.fastrprint(",");
-              client.fastrprintln(relayState(AUXRELAY));
-            }
-          } else {
-            Serial.println("Invalid key");
+        timeout = millis() + TIMEOUT_MS;
+        char c = client.read();
+        if (c == '\n') {
+          if (thisIsRequestLine) {
+            thisIsRequestLine = false;
+            requestLine = currentLine; // Found end of the request line so save this for later parsing
+            Serial.println(""); Serial.print(F("Request line final : ")); Serial.println(requestLine);
           }
-        } else {
-          Serial.println("no auth key provided");
+          if (currentLine.length() == 0) {
+            requestLine.trim(); // Remove white space at the end of the line
+            while (requestLine.charAt(0) == ' ') requestLine.remove(0); // Remove spaces from the start of the line
+
+            // Only handle GET requests
+            if (requestLine.indexOf("GET") == 0) {
+              // We have a GET request
+              supportedAction = true;
+
+              requestLine.remove(0, 4); // Remove "GET "
+              if (requestLine.indexOf(" ") >= 0) {
+                requestLine.remove(requestLine.indexOf(" "));
+              }
+
+              // Find the parameters
+              int delimeterIndex = requestLine.indexOf('?');
+              if (delimeterIndex > 0) {
+                String parameters = requestLine.substring(delimeterIndex + 1);
+                String key = "";
+                String value = "";
+
+                // work with the next key/value pair
+                delimeterIndex = parameters.indexOf('&');
+                do {
+                  String pair = parameters.substring(0, delimeterIndex >= 0 ? delimeterIndex : 100);
+                  parameters.remove(0, pair.length()+1); // We have the key/value pair so remove them from the parameter list for easier, consistent processing of the next pair
+
+                  // Seperate the key and value from the pair
+                  delimeterIndex = pair.indexOf('=');
+                  key = pair.substring(0, delimeterIndex >= 0 ? delimeterIndex : 100);
+                  value = pair.substring(delimeterIndex >= 0 ? delimeterIndex+1 : 0);
+
+                  // If this is the authentication parameter, check to see if the credentials are correct
+                  if (key == "key" && value == CONNECTION_KEY) {
+                    authenticated = true;
+                  }
+                  
+                  delimeterIndex = parameters.indexOf('&');
+                } while (parameters.length() > 0);
+              }
+            } else {
+              supportedAction = false;
+            }
+
+            // Do we have a valid request?
+            if (authenticated && supportedAction) {
+              // Parse the request and act on it
+
+              requestLine.toLowerCase(); // Make it easier to compare
+
+              Serial.print("request:"); Serial.println(requestLine);
+              
+              if (requestLine.indexOf("/green=on") >= 0) relay(GREENRELAY, 1);
+              if (requestLine.indexOf("/green=off") >= 0) relay(GREENRELAY,0);
+              if (requestLine.indexOf("/orange=on") >= 0) relay(ORANGERELAY, 1);
+              if (requestLine.indexOf("/orange=off") >= 0) relay(ORANGERELAY,0);
+              if (requestLine.indexOf("/yellow=on") >= 0) relay(YELLOWRELAY, 1);
+              if (requestLine.indexOf("/yellow=off") >= 0) relay(YELLOWRELAY,0);
+              if (requestLine.indexOf("/aux=on") >= 0) relay(AUXRELAY, 1);
+              if (requestLine.indexOf("/aux=off") >= 0) relay(AUXRELAY,0);
+              if (requestLine.startsWith("/all=on")) { relay(GREENRELAY,1); relay(ORANGERELAY, 1); relay(YELLOWRELAY,1); relay(AUXRELAY, 1); }
+              if (requestLine.startsWith("/all=off")) { relay(GREENRELAY,0); relay(ORANGERELAY, 0); relay(YELLOWRELAY,0); relay(AUXRELAY, 0); }
+
+              if (requestLine.startsWith("/green=state")) statusOutput = relayState(GREENRELAY) == LOW ? "ON" : "OFF";
+              if (requestLine.startsWith("/orange=state")) statusOutput = relayState(ORANGERELAY) == LOW ? "ON" : "OFF";
+              if (requestLine.startsWith("/yellow=state")) statusOutput = relayState(YELLOWRELAY) == LOW ? "ON" : "OFF";
+              if (requestLine.startsWith("/aux=state")) statusOutput = relayState(AUXRELAY) == LOW ? "ON" : "OFF";
+              if (requestLine.startsWith("/all=state")) {
+                statusOutput = relayState(GREENRELAY) == LOW ? "ON" : "OFF";
+                statusOutput += ',';
+                statusOutput += relayState(ORANGERELAY) == LOW ? "ON" : "OFF";
+                statusOutput += ',';
+                statusOutput += relayState(YELLOWRELAY) == LOW ? "ON" : "OFF";
+                statusOutput += ',';
+                statusOutput += relayState(AUXRELAY) == LOW ? "ON" : "OFF";
+              }
+              Serial.print(F("Return body is ")); Serial.println(statusOutput);
+              client.println(F("HTTP/1.1 200 OK"));
+              
+              // Turn the LCD backlight off when we have the first valid request
+              if (firstRequest) {
+                lcd.noBacklight();
+                firstRequest = false;
+              }
+            } else {
+              if (!supportedAction) {
+                client.println(F("HTTP/1.1 405 Method Not Allowed"));
+              } else {
+                client.println(F("HTTP/1.1 200 AUTH"));
+              }
+            }
+            client.println(F("Content-type: text/html"));
+            client.println(F("Connection: close"));
+            client.println();
+            if (statusOutput.length() > 0) client.println(statusOutput);
+            break;
+          } else {
+            currentLine = "";
+          }
+        } else if (c != '\r') {
+          currentLine += c;
         }
-        
-      } else {
-        // Unsupported action, respond with an HTTP 405 method not allowed error.
-        client.fastrprintln(F("HTTP/1.1 405 Method Not Allowed"));
-        client.fastrprintln(F(""));
       }
     }
-
-    // Wait a short period to make sure the response had time to send before
-    // the connection is closed (the CC3000 sends data asyncronously).
-    delay(100);
-
-    // Close the connection when done.
+    client.stop();
     Serial.println(F("Client disconnected"));
-    client.close();
-  
-    lcd.noBacklight();
-
   }
 }
 
-// Return true if the buffer contains an HTTP request.  Also returns the request
-// path and action strings if the request was parsed.  This does not attempt to
-// parse any HTTP headers because there really isn't enough memory to process
-// them all.
-// HTTP request looks like:
-//  [method] [path] [version] \r\n
-//  Header_key_1: Header_value_1 \r\n
-//  ...
-//  Header_key_n: Header_value_n \r\n
-//  \r\n
-bool parseRequest(uint8_t* buf, int bufSize, char* action, char* path, char *params) {
-  // Check if the request ends with \r\n to signal end of first line.
-  if (bufSize < 2)
-    return false;
-  if (buf[bufSize-2] == '\r' && buf[bufSize-1] == '\n') {
-    parseFirstLine((char*)buf, action, path, params);
-    return true;
-  }
-  return false;
-}
-
-// Parse the action and path from the first line of an HTTP request.
-void parseFirstLine(char* line, char* action, char* path, char *params) {
-  // Parse first word up to whitespace as action.
-  char* lineaction = strtok(line, " ");
-  if (lineaction != NULL)
-    strncpy(action, lineaction, MAX_ACTION);
-  // Parse second word up to whitespace as path.
-  char* linepath = strtok(NULL, " ?");
-  if (linepath != NULL)
-    strncpy(path, linepath, MAX_PATH);
-
-  char* lineparam = strtok(NULL, " ?");
-  if (lineparam != NULL) 
-    strncpy(params,  lineparam, MAX_PATH);
-    
-}
-
-// Tries to read the IP address and other connection details
-bool displayConnectionDetails(void)
-{
-  uint32_t ipAddress, netmask, gateway, dhcpserv, dnsserv;
-  
-  if(!cc3000.getIPAddress(&ipAddress, &netmask, &gateway, &dhcpserv, &dnsserv))
-  {
-    Serial.println(F("Unable to retrieve the IP Address!\r\n"));
-    return false;
-  }
-  else
-  {
-    Serial.print(F("\nIP Addr: ")); cc3000.printIPdotsRev(ipAddress);
-    Serial.print(F("\nNetmask: ")); cc3000.printIPdotsRev(netmask);
-    Serial.print(F("\nGateway: ")); cc3000.printIPdotsRev(gateway);
-    Serial.print(F("\nDHCPsrv: ")); cc3000.printIPdotsRev(dhcpserv);
-    Serial.print(F("\nDNSserv: ")); cc3000.printIPdotsRev(dnsserv);
-    Serial.println();
-    return true;
-  }
-}
-
+// Setting the state of a relay port
 void relay(int port, int state) {
-  Serial.print("Setting port ");Serial.print(port);Serial.print(" to ");Serial.println(state);
+  Serial.print(F("Setting port "));Serial.print(port);Serial.print(F(" to "));Serial.println(state);
   digitalWrite(port, state == 1 ? LOW : HIGH);
 }
 
-char *relayState(int port) {
-  Serial.print("port state is ");Serial.println(digitalRead(port));
-  return (digitalRead(port) == LOW ? "ON" : "OFF"); 
+// Get the state of a relay port
+int relayState(int port) {
+  int readValue = digitalRead(port);
+  Serial.print(F("port state is "));Serial.println(readValue == LOW ? "ON" : "OFF");
+  return readValue;
 }
+
+int freeRam() {
+  extern int __heap_start, *__brkval;
+  int v;
+  return (int) &v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
+}
+
 
