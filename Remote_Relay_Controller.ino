@@ -6,7 +6,7 @@
 #include <SPI.h>
 
 #define WLAN_SSID       "<SSID>"   // cannot be longer than 32 characters!
-#define WLAN_PASS       "<PASS>"
+#define WLAN_PASS       "<PASSWORD>"
 
 #define TIMEOUT_MS            500    // Amount of time in milliseconds to wait for
 
@@ -16,9 +16,12 @@
 #define YELLOWRELAY 16
 #define AUXRELAY 17
 
+#define LOGGING_SERVER "192.168.1.10"
+
 WiFiServer httpServer(80);
 int status = WL_IDLE_STATUS;
 bool firstRequest = true;
+unsigned long lastConnection = millis();
 
 LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);  // Set the LCD I2C address
 
@@ -47,6 +50,9 @@ void setup(void) {
     status = WiFi.begin(WLAN_SSID, WLAN_PASS);
     delay(10000);
   }
+
+  // Tell the system that we've rebooted - log an event
+  logStartupEvent();
   
   httpServer.begin();
   IPAddress ip = WiFi.localIP();
@@ -83,10 +89,18 @@ void setup(void) {
   Serial.println(F("Listening for connections..."));
 }
 
+void (* resetFunc) (void) = 0;
+
+
 void loop(void) {
+  if (millis() - lastConnection > 1200000) { // No contact for last 20 minutes, reboot = 1000 * 60 * 20
+    resetFunc();
+  }
+  
   // Try to get a client which is connected.
   WiFiClient client = httpServer.available();
   if (client) {
+    lastConnection = millis();
     Serial.println(F("Client connected."));
     bool thisIsRequestLine = true; // First input line is the request
 
@@ -242,4 +256,26 @@ int freeRam() {
   return (int) &v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
 }
 
+
+void logStartupEvent() {
+  WiFiClient client;
+
+  if (client.connect(LOGGING_SERVER, 80)) {
+    Serial.println("Logging reboot");
+    client.println("GET /eventlogger/eventlogger.php?t=boot&d=0&i=relay%20startup HTTP/1.1");
+    client.print("Host: ");
+    client.println(LOGGING_SERVER);
+    client.println("Connection: close");
+    client.println();
+
+    while (client.available()) {
+      char c = client.read();
+      Serial.write(c);
+    }
+    if (!client.connected()) {
+      Serial.println();
+      client.stop();
+    }
+  }
+}
 
